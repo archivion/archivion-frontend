@@ -12,10 +12,10 @@ const storage = new Storage({
 const firestore = new Firestore({
   projectId: process.env.GOOGLE_CLOUD_PROJECT_ID,
   keyFilename: process.env.GOOGLE_CLOUD_KEY_FILE,
-  databaseId: process.env.FIRESTORE_DATABASE_ID || "dbtubesltka2425", // Use environment variable or default
+  databaseId: process.env.FIRESTORE_DATABASE_ID || "dbmedialtka", // Use environment variable or default
 })
 
-const BUCKET_NAME = process.env.GCS_BUCKET_NAME || "tubesltka2425"
+const BUCKET_NAME = process.env.GCS_BUCKET_NAME || "buketmedialtka"
 
 // Helper function to get file type from content type
 function getFileTypeFromContentType(contentType: string): "image" | "video" | "audio" | "unknown" {
@@ -92,27 +92,41 @@ export async function GET(request: NextRequest) {
     let processedFiles = await Promise.all(
       files.map(async (file) => {
         try {
-          const [metadata] = await file.getMetadata()
+          const [gcsMetadata] = await file.getMetadata()
 
           // Extract original name from metadata if available
-          const originalName = metadata.metadata?.originalName || file.name
+          const originalName = gcsMetadata.metadata?.originalName || file.name
           const bucketFileName = file.name // This is the fileName with timestamp prefix
 
           // Determine file type
-          const contentType = metadata.contentType || ""
+          const contentType = gcsMetadata.contentType || ""
           const fileTypeFromContent = getFileTypeFromContentType(contentType)
 
           // Check if metadata exists in Firestore using bucket fileName
           const firestoreMetadata = metadataMap.get(bucketFileName)
           const hasMetadata = !!firestoreMetadata
 
-          // Determine status based on metadata availability
+          // Determine status based on processingStatus field
           let status = "uploaded"
-          if (hasMetadata) {
-            status = "completed"
+          let showMetadata = false
+
+          if (firestoreMetadata && firestoreMetadata.processingStatus) {
+            const processingStatus = firestoreMetadata.processingStatus
+
+            if (processingStatus === "Completed") {
+              status = "completed" // Will show as "Ready" in UI
+              showMetadata = true
+            } else if (processingStatus === "In Progress") {
+              status = "processing" // Will show as "Processing" in UI
+              showMetadata = false
+            } else {
+              // Handle other statuses like "Failed", "Pending", etc.
+              status = "processing"
+              showMetadata = false
+            }
           } else {
-            // Check file age - if older than 10 minutes and no metadata, might be processing
-            const fileAge = Date.now() - new Date(metadata.timeCreated).getTime()
+            // No metadata found yet or no processingStatus field
+            const fileAge = Date.now() - new Date(gcsMetadata.timeCreated).getTime()
             const tenMinutes = 10 * 60 * 1000
 
             if (fileAge > tenMinutes) {
@@ -120,6 +134,7 @@ export async function GET(request: NextRequest) {
             } else {
               status = "uploaded" // Recently uploaded, processing expected
             }
+            showMetadata = false
           }
 
           // Generate signed URL for download
@@ -136,24 +151,26 @@ export async function GET(request: NextRequest) {
             name: originalName, // Display original name
             fileName: bucketFileName, // Store bucket fileName for metadata lookup
             fileType: fileTypeFromContent,
-            size: Number.parseInt(metadata.size),
-            contentType: metadata.contentType,
+            size: Number.parseInt(gcsMetadata.size),
+            contentType: gcsMetadata.contentType,
             status: status,
-            createdAt: metadata.timeCreated,
+            createdAt: gcsMetadata.timeCreated,
             downloadUrl: downloadUrl,
             previewUrl: previewUrl,
             publicUrl: `https://storage.googleapis.com/${BUCKET_NAME}/${bucketFileName}`,
-            hasMetadata: hasMetadata,
-            // Include AI analysis if metadata exists
-            aiAnalysis: firestoreMetadata
-              ? {
-                  tags: firestoreMetadata.tags || firestoreMetadata.object_tags || [],
-                  transcript: firestoreMetadata.transcription || "",
-                  extractedText: firestoreMetadata.extractedText || "",
-                  scenes: firestoreMetadata.scenes || [],
-                  topics: firestoreMetadata.topics || [],
-                }
-              : undefined,
+            hasMetadata: showMetadata, // Only true when processingStatus is "Completed"
+            processingStatus: firestoreMetadata?.processingStatus || "Unknown",
+            // Include AI analysis if metadata should be shown
+            aiAnalysis:
+              showMetadata && firestoreMetadata
+                ? {
+                    tags: firestoreMetadata.tags || firestoreMetadata.object_tags || [],
+                    transcript: firestoreMetadata.transcription || "",
+                    extractedText: firestoreMetadata.extractedText || "",
+                    scenes: firestoreMetadata.scenes || [],
+                    topics: firestoreMetadata.topics || [],
+                  }
+                : undefined,
           }
         } catch (error) {
           console.error(`Error processing file ${file.name}:`, error)
@@ -181,7 +198,7 @@ export async function GET(request: NextRequest) {
           return true
         }
 
-        // Check metadata only if it exists
+        // Check metadata only if it should be shown (processingStatus is "Completed")
         if (file.hasMetadata && file.aiAnalysis) {
           // Check tags
           if (file.aiAnalysis.tags && Array.isArray(file.aiAnalysis.tags)) {

@@ -39,6 +39,7 @@ interface MediaFile {
   createdAt: string
   status: "uploaded" | "processing" | "completed" | "error"
   hasMetadata?: boolean
+  processingStatus?: string
   aiAnalysis?: {
     tags: string[]
     transcript?: string
@@ -128,10 +129,10 @@ export default function MediaLibrary() {
         setFilteredFiles(sortedFiles)
         console.log(`Loaded ${data.files?.length || 0} files`)
 
-        // Log files with metadata status
+        // Log files with processing status
         data.files?.forEach((file: MediaFile) => {
           console.log(
-            `File: ${file.name} (${file.fileName}) - Status: ${file.status} - HasMetadata: ${file.hasMetadata}`,
+            `File: ${file.name} (${file.fileName}) - Status: ${file.status} - ProcessingStatus: ${file.processingStatus} - HasMetadata: ${file.hasMetadata}`,
           )
         })
       } else {
@@ -230,6 +231,7 @@ export default function MediaLibrary() {
           ...result.file,
           status: "uploaded", // Start with uploaded status
           hasMetadata: false, // No metadata initially
+          processingStatus: "Unknown", // Will be updated when processing starts
         }
 
         const updatedFiles = [newFile, ...files]
@@ -352,7 +354,7 @@ export default function MediaLibrary() {
     } finally {
       setDownloadingFileId(null) // Reset loading state
     }
-  }    
+  }
 
   const viewFileDetails = async (file: MediaFile) => {
     setDetailLoading(file.id)
@@ -368,14 +370,15 @@ export default function MediaLibrary() {
           ...result.file,
           status: result.file.status || file.status,
           hasMetadata: file.hasMetadata,
+          processingStatus: file.processingStatus,
         }
         setSelectedFile(fileWithStatus)
       } else {
         setSelectedFile(file)
       }
 
-      // Fetch metadata using fileName (bucket name with timestamp)
-      if (file.hasMetadata) {
+      // Fetch metadata only if processingStatus is "Completed"
+      if (file.processingStatus === "Completed" && file.hasMetadata) {
         setMetadataLoading(true)
         setFileMetadata(null)
 
@@ -397,7 +400,7 @@ export default function MediaLibrary() {
           setMetadataLoading(false)
         }
       } else {
-        // No metadata available yet
+        // Processing not completed yet, don't load metadata
         setFileMetadata(null)
         setMetadataLoading(false)
       }
@@ -461,18 +464,18 @@ export default function MediaLibrary() {
     }
   }
 
-  const getStatusText = (status: string) => {
-    switch (status) {
-      case "completed":
-        return "Completed"
-      case "processing":
-        return "Processed"
-      case "uploaded":
-        return "Processed"
-      case "error":
-        return "Error"
-      default:
-        return status
+  // Updated status text based on processingStatus
+  const getStatusText = (status: string, processingStatus?: string) => {
+    if (status === "completed" && processingStatus === "Completed") {
+      return "Ready"
+    } else if (status === "processing" || processingStatus === "In Progress") {
+      return "Processing"
+    } else if (status === "uploaded") {
+      return "Processing"
+    } else if (status === "error") {
+      return "Error"
+    } else {
+      return "Processing"
     }
   }
 
@@ -533,7 +536,7 @@ export default function MediaLibrary() {
           <div>
             <h1 className="text-3xl font-bold mb-2">Archivion</h1>
             <p className="text-gray-600">
-            Upload and share media seamlessly, and find what you need in seconds with intelligent auto-tagging.
+              Upload and share media seamlessly, and find what you need in seconds with intelligent auto-tagging.
             </p>
           </div>
           <Button onClick={fetchFiles} variant="outline" disabled={loading}>
@@ -734,7 +737,9 @@ export default function MediaLibrary() {
                           <p className="text-xs text-gray-500">{formatFileSize(file.size)} MB</p>
                         </div>
                       </div>
-                      <Badge className={getStatusColor(file.status)}>{getStatusText(file.status)}</Badge>
+                      <Badge className={getStatusColor(file.status)}>
+                        {getStatusText(file.status, file.processingStatus)}
+                      </Badge>
                     </div>
                   </CardHeader>
 
@@ -750,7 +755,7 @@ export default function MediaLibrary() {
                   </CardContent>
 
                   <CardFooter className="flex gap-2 pt-2">
-                  <Button
+                    <Button
                       size="sm"
                       variant="outline"
                       onClick={() => handleDownloadFile(file.id, file.name)}
@@ -882,8 +887,15 @@ export default function MediaLibrary() {
                 </div>
                 <div>
                   <strong>Status:</strong>{" "}
-                  <Badge className={getStatusColor(selectedFile.status)}>{getStatusText(selectedFile.status)}</Badge>
+                  <Badge className={getStatusColor(selectedFile.status)}>
+                    {getStatusText(selectedFile.status, selectedFile.processingStatus)}
+                  </Badge>
                 </div>
+                {selectedFile.processingStatus && (
+                  <div className="col-span-2">
+                    <strong>Processing Status:</strong> {selectedFile.processingStatus}
+                  </div>
+                )}
               </div>
 
               {/* Enhanced Metadata */}
@@ -893,13 +905,15 @@ export default function MediaLibrary() {
                   {metadataLoading && <Loader2 className="h-4 w-4 animate-spin" />}
                 </h3>
 
-                {selectedFile.hasMetadata === false ? (
+                {selectedFile.processingStatus !== "Completed" ? (
                   <Alert className="bg-blue-50 text-blue-800 border-blue-200">
                     <Loader2 className="h-4 w-4 animate-spin text-blue-600" />
                     <AlertDescription>
                       <strong>Processing file...</strong>
                       <br />
-                      AI analysis is in progress. Metadata will be available once processing is complete. Please refresh the page in a few minutes to view the results.
+                      AI analysis is in progress (Status: {selectedFile.processingStatus || "Unknown"}). Metadata will
+                      be available once processing is complete. Please refresh the page in a few minutes to view the
+                      results.
                     </AlertDescription>
                   </Alert>
                 ) : metadataLoading ? (
@@ -914,7 +928,7 @@ export default function MediaLibrary() {
 
               {/* Actions */}
               <div className="flex justify-end gap-2 pt-4 border-t">
-              <Button
+                <Button
                   variant="outline"
                   disabled={downloadingFileId === selectedFile.id} // Disable while downloading
                   onClick={() => handleDownloadFile(selectedFile.id, selectedFile.name)}
